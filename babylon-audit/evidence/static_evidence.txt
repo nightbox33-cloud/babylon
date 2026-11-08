@@ -1,0 +1,273 @@
+
+=== identidad de los dos árboles ===
+0c1f144 feat(upgrade): backport Go 1.26.10 rebuild to release/v4.7.x (#2045)
+8b9673c docs: backport v4.7.0 changelog to main (#2047)
+
+=== E1 · wasmStack nil en el router IBC (sólo main lo corrige) ===
+fatal: invalid object name '132d0502'.
+fatal: invalid object name '132d0502'.
+live 132d0502: var-nil=0  AddRoute(nil)=0
+fatal: invalid object name 'f9006e42'.
+fatal: invalid object name 'f9006e42'.
+live f9006e42: var-nil=0  AddRoute(nil)=0
+fatal: invalid object name 'b56abc97'.
+fatal: invalid object name 'b56abc97'.
+live b56abc97: var-nil=0  AddRoute(nil)=0
+live 0c1f1447: var-nil=1  AddRoute(nil)=1
+main    : var-nil=0  AddRoute(nil)=0
+
+=== E2 · AfterRawCheckpointForgotten corta el bucle en i=0 ===
+-- live --
+func (h MultiCheckpointingHooks) AfterRawCheckpointForgotten(ctx context.Context, ckpt *RawCheckpoint) error {
+	for i := range h {
+		return h[i].AfterRawCheckpointForgotten(ctx, ckpt)
+	}
+	return nil
+}
+-- main --
+func (h MultiCheckpointingHooks) AfterRawCheckpointForgotten(ctx context.Context, ckpt *RawCheckpoint) error {
+	for i := range h {
+		if err := h[i].AfterRawCheckpointForgotten(ctx, ckpt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+=== E3 · Sanitize: Equal(-1) vs IsNegative() ===
+-- live --
+func (crt *CostakerRewardsTracker) Sanitize() {
+	// Handle the case where ActiveBaby is -1 due to rounding when the validator
+	// lost its 1:1 ratio between shares and tokens due to slashing
+	if crt.ActiveBaby.Equal(sdkmath.NewInt(-1)) {
+		crt.ActiveBaby = sdkmath.ZeroInt()
+	}
+}
+-- main --
+func (crt *CostakerRewardsTracker) Sanitize() {
+	// Handle the case where ActiveBaby goes slightly negative due to rounding
+	// when the validator lost its 1:1 ratio between shares and tokens due to
+	// slashing. Multiple operations (slash + delegations + epoch boundary
+	// removal) can accumulate rounding errors beyond -1.
+	if crt.ActiveBaby.IsNegative() {
+		crt.ActiveBaby = sdkmath.ZeroInt()
+	}
+}
+
+=== E4 · Validate del tracker rechaza ActiveBaby negativo ===
+func (crt CostakerRewardsTracker) Validate() error {
+	if !crt.TotalScore.IsNil() && crt.TotalScore.IsNegative() {
+		return ErrInvalidCostakerRwdTracker.Wrapf("has negative total score %s", crt.TotalScore.String())
+	}
+	if !crt.ActiveBaby.IsNil() && crt.ActiveBaby.IsNegative() {
+		return ErrInvalidCostakerRwdTracker.Wrapf("has negative active baby %s", crt.ActiveBaby.String())
+	}
+	if !crt.ActiveSatoshis.IsNil() && crt.ActiveSatoshis.IsNegative() {
+		return ErrInvalidCostakerRwdTracker.Wrapf("has negative active sats %s", crt.ActiveSatoshis.String())
+	}
+	return nil
+}
+
+=== E5 · UpdateScore = Min(ActiveSatoshis, ActiveBaby/ratio) ===
+package types
+
+import (
+	sdkmath "cosmossdk.io/math"
+)
+
+// UpdateScore updates the TotalScore property of the costaker rewards tracker based on the current
+// values of ActiveSatoshis, ActiveBaby and the given scoreRatioBtcByBaby by parameter.
+// The formula for the total score is defined as Min(total active btc staked, total active baby staked / ratio)
+// It also returns the delta value difference from the (current total score - previous score).
+// The returned value can be negative, meaning that the current total score is lower than the previous score.
+func (c *CostakerRewardsTracker) UpdateScore(scoreRatioBtcByBaby sdkmath.Int) (deltaPreviousScore sdkmath.Int) {
+	previousTotalScore := c.TotalScore
+
+	activeBabyByRatio := c.ActiveBaby.Quo(scoreRatioBtcByBaby)
+	c.TotalScore = sdkmath.MinInt(c.ActiveSatoshis, activeBabyByRatio)
+
+	return c.TotalScore.Sub(previousTotalScore)
+}
+
+=== E6 · VoteExtension.Validate en live (sólo nil/empty) ===
+func (ve *VoteExtension) Validate() error {
+	if ve.Signer == "" {
+		return fmt.Errorf("empty signer address")
+	}
+	if ve.ValidatorAddress == "" {
+		return fmt.Errorf("empty validator address")
+	}
+	if ve.BlockHash == nil {
+		return fmt.Errorf("empty block hash")
+	}
+	if ve.BlsSig == nil {
+		return fmt.Errorf("empty BLS signature")
+	}
+	return nil
+}
+
+=== E7 · IsFinalityProviderDeleted presente en live ===
+0c1f1447:x/btcstaking/keeper/finality_providers.go:129:// IsFinalityProviderDeleted returns if the finality provider is soft-deleted or not. The state of soft-deleted
+0c1f1447:x/btcstaking/keeper/finality_providers.go:132:func (k Keeper) IsFinalityProviderDeleted(ctx context.Context, fpBtcPk *bbn.BIP340PubKey) bool {
+0c1f1447:x/btcstaking/keeper/grpc_query.go:36:		isDeleted := k.IsFinalityProviderDeleted(ctx, fp.BtcPk)
+0c1f1447:x/btcstaking/keeper/grpc_query.go:76:	isDeleted := k.IsFinalityProviderDeleted(ctx, fp.BtcPk)
+0c1f1447:x/finality/keeper/msg_server.go:90:	if ms.BTCStakingKeeper.IsFinalityProviderDeleted(ctx, req.FpBtcPk) {
+
+=== E8 · patrones presentes sólo en main ===
+validateStakerBtcPk      live=0 main=2
+fundingInputValue        live=2 main=4
+refreshFPCommissions     live=0 main=3
+MaxVoteExtensionSize     live=0 main=4
+
+=== E9 · minter.go: diff sólo de comentario ===
+diff --git a/x/mint/types/minter.go b/x/mint/types/minter.go
+index 7762118..5f43f59 100644
+--- a/x/mint/types/minter.go
++++ b/x/mint/types/minter.go
+@@ -12,8 +12,9 @@ import (
+ 
+ const DefaultBondDenom = "ubbn"
+ 
+-// MaxMintedPerBlock defines the maximum amount allowed to mint per block
+-// On mainnet currently there is around 189 Baby tokens minted per block.
++// MaxMintedPerBlock defines the maximum amount (in ubbn, i.e. micro-Baby tokens) allowed to mint per block.
++// On mainnet, the current rate is around 189 Baby tokens per block (≈189_000000 ubbn), so this cap of
++// 600_000000 ubbn (600 Baby tokens) is approximately 3.17x the current rate.
+ var MaxMintedPerBlock = math.NewInt(600_000000)
+ 
+ // NewMinter returns a new Minter object.
+
+=== E10 · hechos de dependencias (verificados por lectura, no reproducibles offline) ===
+  cosmos-sdk v0.53.8  baseapp/baseapp.go  -> runTx tiene recover()
+  cosmos-sdk v0.53.8  baseapp/abci.go     -> ProcessProposal Y PrepareProposal con defer recover()
+  cosmos-sdk v0.53.8  types/utils.go      -> BigEndianToUint64 panica con 1..7 bytes
+  ibc-go v10.5.0      core/keeper/msg_server.go -> ChannelOpenInit resuelve cbs del router
+  wasmd v0.60.9       NewIBCHandler(...) IBCHandler -> devuelve VALOR, no puntero
+
+=== E11 · ante construye RefundTxDecorator con nil, el post handler real usa el keeper ===
+74:		incentivekeeper.NewRefundTxDecorator(nil),
+558:		incentivekeeper.NewRefundTxDecorator(&app.IncentiveKeeper),
+560:	app.SetPostHandler(postHandler)
+
+=== E12 · gas_limit del ante (10M, sólo CheckTx) ===
+11:// DefaultMaxGasWantedPerTx is the default value for the maximum gas allowed for a single transaction
+12:const DefaultMaxGasWantedPerTx = 10_000_000
+20:		MaxGasWantedPerTx: DefaultMaxGasWantedPerTx,
+51:	if ctx.IsCheckTx() && !simulate {
+64:		return DefaultMaxGasWantedPerTx
+
+=== E13 · NewSortedValidatorSet con BigEndianToUint64 (panic si Addr de 1..7 bytes) ===
+func NewSortedValidatorSet(vals []Validator) ValidatorSet {
+	sort.Slice(vals, func(i, j int) bool {
+		return sdk.BigEndianToUint64(vals[i].Addr) < sdk.BigEndianToUint64(vals[j].Addr)
+	})
+	return vals
+}
+-- corte: el verificador de Babylon exige 20 o 32 bytes --
+	config.SetAddressVerifier(func(bytes []byte) error {
+		if len(bytes) == 0 {
+			return errorsmod.Wrap(sdkerrors.ErrUnknownAddress, "addresses cannot be empty")
+		}
+
+		if len(bytes) != 20 && len(bytes) != 32 {
+			return errorsmod.Wrapf(sdkerrors.ErrUnknownAddress, "address length must be 20 or 32 bytes, got %d", len(bytes))
+		}
+
+		return nil
+	})
+
+=== E14 · de dónde salen los Addr del conjunto (validadores reales) ===
+func (k Keeper) InitValidatorSet(ctx context.Context) {
+	epochNumber := k.GetEpoch(ctx).EpochNumber
+	store := k.valSetStore(ctx, epochNumber)
+	totalPower := int64(0)
+
+	// store the validator set
+	err := k.stk.IterateLastValidatorPowers(ctx, func(addr sdk.ValAddress, power int64) (stop bool) {
+		addrBytes := []byte(addr)
+		powerBytes, err := sdkmath.NewInt(power).Marshal()
+		if err != nil {
+			panic(errorsmod.Wrap(types.ErrMarshal, err.Error()))
+		}
+		store.Set(addrBytes, powerBytes)
+		totalPower += power
+
+=== E15 · FP soft-deleted: la marca sólo se comprueba al firmar ===
+func (k Keeper) validateStakedFPs(ctx sdk.Context, fpBTCPKs []bbn.BIP340PubKey) error {
+	for i := range fpBTCPKs {
+		fpBTCPK := fpBTCPKs[i]
+		fp, err := k.GetFinalityProvider(ctx, fpBTCPK)
+		if err != nil {
+			return types.ErrFpNotFound.Wrapf("finality provider pk %s is not found: %v", fpBTCPK.MarshalHex(), err)
+		}
+		if fp.IsSlashed() {
+			return types.ErrFpAlreadySlashed.Wrapf("finality key: %s", fpBTCPK.MarshalHex())
+		}
+	}
+	return nil
+}
+-- quién escribe la marca (sólo upgrade y genesis) --
+0c1f1447:app/upgrades/delete_dup_fp.go:26:		SoftDeleteFinalityProvider(ctx context.Context, fpBtcPk *bbn.BIP340PubKey) error
+0c1f1447:app/upgrades/delete_dup_fp.go:127:		err := btcStkK.SoftDeleteFinalityProvider(ctx, deleteFpBtcPk)
+0c1f1447:x/btcstaking/keeper/finality_providers.go:140:// SoftDeleteFinalityProvider sets one finality provider as deleted.
+0c1f1447:x/btcstaking/keeper/finality_providers.go:142:func (k Keeper) SoftDeleteFinalityProvider(ctx context.Context, fpBtcPk *bbn.BIP340PubKey) error {
+0c1f1447:x/btcstaking/keeper/genesis.go:89:		if err := k.SoftDeleteFinalityProvider(ctx, deletedFpBtcPk); err != nil {
+-- tally: totalPower incluye peso muerto --
+func tally(fpSet map[string]uint64, voterBTCPKs map[string]struct{}) bool {
+	totalPower := uint64(0)
+	votedPower := uint64(0)
+	for pkStr, power := range fpSet {
+		totalPower += power
+		if _, ok := voterBTCPKs[pkStr]; ok {
+			votedPower += power
+		}
+	}
+
+	return votedPower*3 > totalPower*2
+}
+
+=== E16 · robo: porciones de fee (genesis mainnet) y orden de BeginBlock ===
+incentive: {"submitter_portion": "0.050000000000000000", "reporter_portion": "0.050000000000000000", "btc_staking_portion": "0.200000000000000000"}
+slashing_rate: 0.010000000000000000 -> 1111111111111111111114oLvT2
+372:		minttypes.ModuleName, incentivetypes.ModuleName, costktypes.ModuleName, distrtypes.ModuleName,
+-- GetCoinsPortion trunca (nunca redondea a favor del receptor) --
+func GetCoinsPortion(coinsInt sdk.Coins, portion math.LegacyDec) sdk.Coins {
+	// coins with decimal value
+	coins := sdk.NewDecCoinsFromCoins(coinsInt...)
+	// portion of coins with decimal values
+	portionCoins := coins.MulDecTruncate(portion)
+	// truncate back
+	// TODO: how to deal with changes?
+	portionCoinsInt, _ := portionCoins.TruncateDecimal()
+	return portionCoinsInt
+}
+
+=== E17 · stake expansion: el patrón sigue permitido, el doble conteo no ===
+549:		!stakeExpansionDel.IsUnbondedEarly() // the stk exp can unbond early prior to having the inclusion proof
+-- sólo MsgBTCUndelegate puede activar una expansión --
+226:		return nil, fmt.Errorf("the BTC delegation %s is a stake expansion, use MsgBTCUndelegate to set the inclusion proof", req.StakingTxHash)
+-- esa vía exige firma del staker y unbondea al padre en la misma tx --
+593:	if err := VerifySpendStakeTxStakerSig(
+643:	ms.btcUndelegate(ctx, btcDel, delegatorUnbondingInfo)
+-- la remediación del GHSA-4rm2 fue una migración de una sola vez --
+71:func RemediatePoisonedStakeExpansions(
+
+=== E18 · mint: ninguna entrada la controla el usuario ===
+func (m Minter) CalculateBlockProvision(current time.Time, previous time.Time) (sdk.Coin, error) {
+	if current.Before(previous) {
+		return sdk.Coin{}, fmt.Errorf("current time %v cannot be before previous time %v", current, previous)
+	}
+	timeElapsed := current.Sub(previous).Nanoseconds()
+	portionOfYear := math.LegacyNewDec(timeElapsed).Quo(math.LegacyNewDec(NanosecondsPerYear))
+	blockProvision := m.AnnualProvisions.Mul(portionOfYear)
+
+	blockProvisionInt := blockProvision.TruncateInt()
+	amountToMint := math.MinInt(blockProvisionInt, MaxMintedPerBlock)
+
+	return sdk.NewCoin(m.BondDenom, amountToMint), nil
+}
+
+=== E19 · tokenfactory: params sin campo de mint por sudo ===
+Params{DenomCreationFee, DenomCreationGasConsume} — no existe EnableSudoMint en el fork
+
+=== fin ===
