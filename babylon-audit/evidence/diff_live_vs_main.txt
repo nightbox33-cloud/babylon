@@ -1,0 +1,106 @@
+### tags/commits
+be62a84d15cec4549db878be77ddb6c34088f3fb
+8b9673c3ba5cff55b30865e876bfa4bf96bcd4b4
+
+### stat (sin tests)
+ app/ante/ibc_msg_size.go                         |   4 +-
+ app/keepers/keepers.go                           |   3 +-
+ app/upgrades/epoching/validation.go              |  27 ++
+ app/upgrades/v4_2/upgrade.go                     |   4 +-
+ app/upgrades/v4_7/upgrade.go                     |   6 +-
+ app/upgrades/v4_8/upgrade.go                     | 352 ++++++++++++++
+ crypto/bip322/bip322.go                          |   7 +-
+ test/e2e/configurer/chain/commands.go            |  25 +-
+ test/e2e/configurer/chain/commands_btcstaking.go |   7 +-
+ test/e2e/configurer/chain/queries_btcstaking.go  |  98 +---
+ test/e2e/configurer/chain/queries_incentive.go   |  14 +-
+ test/e2e/gov_finality_resume.go                  |   3 +-
+ test/e2ev2/tmanager/chain.go                     |  47 +-
+ test/e2ev2/tmanager/container.go                 |   8 +-
+ test/e2ev2/tmanager/finality_provider.go         | 120 ++++-
+ test/e2ev2/tmanager/genesis.go                   |  45 +-
+ test/e2ev2/tmanager/manager.go                   |  75 ++-
+ test/e2ev2/tmanager/node.go                      | 211 ++++++---
+ test/e2ev2/tmanager/node_queries.go              | 560 +++++++++++++++++------
+ test/e2ev2/tmanager/node_testing.go              |  16 +
+ test/e2ev2/tmanager/node_txs.go                  | 544 ++++++++++------------
+ test/e2ev2/tmanager/port.go                      |   3 +-
+ test/e2ev2/tmanager/wallet.go                    |  49 +-
+ test/replay/costaking.go                         |  90 ++++
+ test/replay/driver.go                            |  11 +-
+ test/replay/staking.go                           |  12 +
+ testutil/btcstaking-helper/keeper.go             |  42 +-
+ testutil/coins/margin.go                         |  55 ++-
+ testutil/keeper/btclightclient.go                |  20 +
+ testutil/keeper/btcstaking.go                    | 161 ++++---
+ testutil/keeper/costaking.go                     |  22 +
+ testutil/keeper/epoching.go                      |  34 ++
+ testutil/keeper/staking.go                       |   3 +
+ testutil/store/key_collision.go                  |  53 +++
+ x/btccheckpoint/types/genesis.go                 |   8 +-
+ x/btcstaking/keeper/btc_delegations.go           |   4 +
+ x/btcstaking/keeper/keeper.go                    |  10 +-
+ x/btcstaking/keeper/migrations.go                |  23 +
+ x/btcstaking/keeper/msg_server.go                |  52 ++-
+ x/btcstaking/keeper/params.go                    |  24 +-
+ x/btcstaking/migrations/v2/store.go              |  76 +++
+ x/btcstaking/module.go                           |   9 +-
+ x/btcstaking/types/errors.go                     |   1 +
+ x/btcstaking/types/keys.go                       |   2 +-
+ x/checkpointing/prepare/proposal.go              |  42 +-
+ x/checkpointing/types/errors.go                  |   1 +
+ x/checkpointing/types/hooks.go                   |   4 +-
+ x/costaking/keeper/hooks_epoching.go             |  47 +-
+ x/costaking/keeper/hooks_staking.go              | 190 ++++----
+ x/costaking/types/rewards.go                     |   8 +-
+ x/costaking/types/score.go                       |  10 +-
+ x/costaking/types/staking_cache.go               |  47 +-
+ x/epoching/types/validator.go                    |   8 +-
+ x/finality/keeper/msg_server.go                  |   5 +
+ x/finality/keeper/power_table.go                 |   9 +
+ x/finality/keeper/rewarding.go                   |  22 +
+ x/incentive/keeper/reward_gauge.go               |   5 -
+ x/mint/types/minter.go                           |   5 +-
+ 58 files changed, 2298 insertions(+), 1045 deletions(-)
+
+### tests nuevos (mapa de fixes)
+TestResetCoStakerRwdsTracker_WithPreexistingTrackers
+TestUpgradeV48
+TestWasmIBCHandler
+TestCostakingSlashedSteal
+TestCostakingSlashingAndUnbondAll
+TestCostakingSlashingAndUnbondSameEpoch
+TestNoKeyCollision
+TestNoKeyCollision
+TestCreateBTCDelegation_DeletedFinalityProvider
+TestBtcStakeExpansionInvalidFundingValue
+TestMigrateStore
+TestMigrateStore_WithMigrator
+TestMigrateStore_OldKeyEmpty_RebuildFromParams
+TestMigrateStore_WithMigrator_OldKeyEmpty
+TestNoKeyCollision
+TestDuplicateField_Issue
+TestProcessProposal_RejectsWhenInjectedTxIsWrongType
+TestMultiCheckpointingHooks_AfterRawCheckpointForgotten
+TestMultiCheckpointingHooks_OtherMethods_AllHooksCalled
+TestNoKeyCollision
+TestHookStakingSlashedValidator_PostSlashDelegationUnbond
+TestHookStakingSlashedValidator_PreSlashDelegationUnbond
+TestHookStakingSlashedValidator_MixedPreAndPostSlashUnbond
+TestHookStakingSlashedValidator_MultipleDeltaShares
+TestHookStakingSlashedValidator_OnlyPostSlashDelegationExists
+TestNoKeyCollision
+TestNoKeyCollision
+TestNewSortedValidatorSetOrdersAscending
+TestValidatorSetBinarySearchUsesFullAddress
+TestValidatorSetBinarySearchHandlesBigEndianPrefix
+TestGetVotingPowerTableOrdered_SortsByVotingPower
+TestRewardBTCStakingRefreshesCommission
+TestNoKeyCollision
+TestNoKeyCollision
+TestNoKeyCollision
+TestNoKeyCollision
+
+### commits de main no contenidos en v4.7.0 (topologia)
+1
+1

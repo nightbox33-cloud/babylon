@@ -1,0 +1,183 @@
+### 1. live: prefijos del store de x/btcstaking
+10:	StoreKey = ModuleName
+13:	RouterKey = ModuleName
+16:	MemStoreKey = "mem_btcstaking"
+20:	ParamsKey           = []byte{0x01} // key prefix for the parameters
+21:	FinalityProviderKey = []byte{0x02} // key prefix for the finality providers
+22:	BTCDelegatorKey     = []byte{0x03} // key prefix for the BTC delegators
+23:	BTCDelegationKey    = []byte{0x04} // key prefix for the BTC delegations
+25:	BTCHeightKey = []byte{0x06} // key prefix for the BTC heights
+27:	PowerDistUpdateKey        = []byte{0x08}              // key prefix for power distribution update events
+28:	AllowedStakingTxHashesKey = collections.NewPrefix(9)  // key prefix for allowed staking tx hashes
+29:	HeightToVersionMapKey     = []byte{0x10}              // key prefix for height to version map
+30:	LargestBtcReorgInBlocks   = collections.NewPrefix(11) // key prefix for the BTC block height difference of the largest reorg
+35:	FpBbnAddrKey             = collections.NewPrefix(16) // key prefix for index fpBbnAddr
+36:	FinalityProvidersDeleted = collections.NewPrefix(17) // key prefix for the deleted finality provider btcPk
+
+### 2. live: el mapa height->version se guarda en la clave EXACTA {0x10}
+188:	return store.Set(types.HeightToVersionMapKey, bz)
+189-}
+190-
+191-// GetParams returns the current x/btccheckpoint module parameters.
+192-func (k Keeper) GetHeightToVersionMap(ctx context.Context) *types.HeightToVersionMap {
+193-	store := k.storeService.OpenKVStore(ctx)
+194:	bz, err := store.Get(types.HeightToVersionMapKey)
+195-	if err != nil {
+196-		panic(err)
+197-	}
+198-	if bz == nil {
+199-		return nil
+200-	}
+201-	var p types.HeightToVersionMap
+202-	k.cdc.MustUnmarshal(bz, &p)
+203-	return &p
+204-}
+205-
+206-func (k Keeper) GetParamsForBtcHeight(ctx context.Context, height uint64) (*types.Params, uint32, error) {
+
+### 3. live: el indice FP->addr es un KeySet con prefijo decimal 16 (= {0x10})
+32:		// fpBbnAddr defines an index of the finality provider babylon address already used
+33:		fpBbnAddr collections.KeySet[[]byte]
+34-		// finalityProvidersDeleted key: BIP340PubKey bytes
+35-		finalityProvidersDeleted collections.KeySet[[]byte]
+36-
+37-		btcNet *chaincfg.Params
+38-		// the address capable of executing a MsgUpdateParams or
+39-		// MsgResumeFinalityProposal message. Typically, this
+--
+78:		fpBbnAddr: collections.NewKeySet(
+79-			sb,
+80-			types.FpBbnAddrKey,
+81-			"fp_bbn_addr",
+82-			collections.BytesKey,
+83-		),
+84-		finalityProvidersDeleted: collections.NewKeySet(
+/home/user/audit/v470/x/btcstaking/keeper/finality_providers.go:79:	return k.fpBbnAddr.Set(ctx, fpAddr)
+/home/user/audit/v470/x/btcstaking/keeper/finality_providers.go:148:	return k.fpBbnAddr.Has(ctx, fpBbnAddr)
+/home/user/audit/v470/x/btcstaking/keeper/genesis.go:332:	iterator, err := k.fpBbnAddr.Iterate(ctx, nil)
+
+### 4. export de genesis: guarda para la clave vacia (hoy no rompe)
+func (k Keeper) fpBbnAddrs(ctx context.Context) ([]string, error) {
+	entries := make([]string, 0)
+
+	iterator, err := k.fpBbnAddr.Iterate(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer iterator.Close()
+
+	for ; iterator.Valid(); iterator.Next() {
+		key, err := iterator.Key()
+		if err != nil {
+			return nil, err
+		}
+		if len(key) == 0 {
+			continue
+		}
+		entries = append(entries, sdk.AccAddress(key).String())
+	}
+
+	return entries, nil
+}
+
+// parseUintsFromStoreKey expects to receive a key with
+
+### 5. main: cambio de prefijo + migracion de store
+diff --git a/x/btcstaking/types/keys.go b/x/btcstaking/types/keys.go
+index 6bb0a18a..ab5e625a 100644
+--- a/x/btcstaking/types/keys.go
++++ b/x/btcstaking/types/keys.go
+@@ -26,7 +26,7 @@ var (
+ 	// 0x07 was used for something else in the past
+ 	PowerDistUpdateKey        = []byte{0x08}              // key prefix for power distribution update events
+ 	AllowedStakingTxHashesKey = collections.NewPrefix(9)  // key prefix for allowed staking tx hashes
+-	HeightToVersionMapKey     = []byte{0x10}              // key prefix for height to version map
++	HeightToVersionMapKey     = collections.NewPrefix(10) // key prefix for height to version map
+ 	LargestBtcReorgInBlocks   = collections.NewPrefix(11) // key prefix for the BTC block height difference of the largest reorg
+ 	// prefix {12} reserved to BTCStakingEventKey
+ 	// prefix {13} is cleaned in v3rc3 and can be reused after that upgrade is run on testnet
+package v2
+
+import (
+	"context"
+	"fmt"
+
+	"cosmossdk.io/core/store"
+	"github.com/cosmos/cosmos-sdk/codec"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+
+	"github.com/babylonlabs-io/babylon/v4/x/btcstaking/types"
+)
+
+var (
+	// (hex 0x10 = decimal 16) key prefix for height to version map
+	// which collides with FpBbnAddrKey that is prefix decimal 16
+	OldHeightToVersionMapKey = []byte{0x10}
+)
+
+// Keeper the expected keeper interface to perform the migration
+type Keeper interface {
+	SetHeightToVersionMap(ctx context.Context, p *types.HeightToVersionMap) error
+	GetAllParams(ctx context.Context) []*types.Params
+}
+
+// MigrateStore performs in-place store migrations.
+// Migration moves HeightToVersionMap from the old key (hex 0x10) to the new key (decimal 10)
+// to resolve the key prefix collision with FpBbnAddrKey.
+func MigrateStore(
+	ctx sdk.Context,
+	cdc codec.BinaryCodec,
+	store store.KVStore,
+	k Keeper,
+) error {
+	bz, err := store.Get(OldHeightToVersionMapKey)
+	if err != nil {
+		return fmt.Errorf("failed to get height to version map key using the old prefix hex 0x10: %w", err)
+	}
+
+	if bz == nil {
+		rebuiltMap, err := rebuildHeightToVersionMap(k.GetAllParams(ctx))
+		if err != nil {
+			return fmt.Errorf("failed to rebuild HeightToVersionMap from existing params: %w", err)
+		}
+		return k.SetHeightToVersionMap(ctx, rebuiltMap)
+	}
+
+	var oldHeightToVersionMap types.HeightToVersionMap
+	err = cdc.Unmarshal(bz, &oldHeightToVersionMap)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal HeightToVersionMap: %w", err)
+	}
+
+	if err := k.SetHeightToVersionMap(ctx, &oldHeightToVersionMap); err != nil {
+		return err
+	}
+	store.Delete(OldHeightToVersionMapKey)
+
+	return nil
+}
+package store
+
+import (
+	"fmt"
+	"testing"
+
+	"cosmossdk.io/collections"
+)
+
+// CheckKeyCollisions checks that all provided keys are unique.
+// For composite keys (multi-byte), it compares the full key.
+// Returns a map of key bytes -> key names for debugging.
+func CheckKeyCollisions(t *testing.T, keys map[string]interface{}) map[string][]string {
+	t.Helper()
+
+	keyMap := make(map[string][]string)
+
+	for name, key := range keys {
+		var keyBytes []byte
+		switch k := key.(type) {
+		case []byte:
+			if len(k) == 0 {
+				t.Fatalf("key %s has empty byte slice", name)
+			}
+			keyBytes = k

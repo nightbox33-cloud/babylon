@@ -1,0 +1,210 @@
+### 1. live: el split usa *fp.Commission cacheada
+67:		coinsForFpsAndDels := gauge.GetCoinsPortion(fpPortion)
+70:		coinsForCommission := types.GetCoinsPortion(coinsForFpsAndDels, *fp.Commission)
+73:		coinsForFpDirect := fpDirectGauge.GetCoinsPortion(fpPortion)
+79:		coinsForBTCDels := coinsForFpsAndDels.Sub(coinsForCommission...)
+80:		if err := k.AddFinalityProviderRewardsForBtcDelegations(ctx, fp.GetAddress(), coinsForBTCDels); err != nil {
+
+### 2. live: la comision solo se lee del store al ENTRAR en la dist-cache
+318:		newFP, err := k.loadFP(ctx, state.FpByBtcPk, fpBTCPKHex)
+329:		fpDistInfo := ftypes.NewFinalityProviderDistInfo(newFP)
+552:		fp, err := k.loadFP(ctx, state.FpByBtcPk, del.FpBtcPk)
+610:func (k Keeper) loadFP(
+// NewFinalityProviderDistInfo loads the FinalityProviderDistInfo based on the fp data.
+// Note: The IsTimestamped property is always set to false, as it is not possible to determine
+// the timestamp without the tip height.
+func NewFinalityProviderDistInfo(fp *bstypes.FinalityProvider) *FinalityProviderDistInfo {
+	return &FinalityProviderDistInfo{
+		BtcPk:          fp.BtcPk,
+		Addr:           sdk.MustAccAddressFromBech32(fp.Addr),
+		Commission:     fp.Commission,
+		TotalBondedSat: 0,
+		IsJailed:       fp.Jailed,
+		IsSlashed:      fp.IsSlashed(),
+		IsTimestamped:  false,
+	}
+}
+
+
+### 3. live: rewardBTCStaking NO refresca comisiones
+  (sin coincidencias -> no hay refresco)
+
+### 4. main: refreshFPCommissions + test
+diff --git a/x/finality/keeper/rewarding.go b/x/finality/keeper/rewarding.go
+index 28ce48c1..46083ed8 100644
+--- a/x/finality/keeper/rewarding.go
++++ b/x/finality/keeper/rewarding.go
+@@ -57,6 +57,10 @@ func (k Keeper) rewardBTCStaking(ctx context.Context, height uint64) {
+ 		panic(fmt.Errorf("voting power distribution cache not found at height %d", height))
+ 	}
+ 
++	// refresh commission rates from the btcstaking store so that
++	// edits via MsgEditFinalityProvider are reflected in reward distribution
++	k.refreshFPCommissions(ctx, dc)
++
+ 	// get all the voters for the height
+ 	voterBTCPKs := k.GetVoters(ctx, height)
+ 
+@@ -67,6 +71,24 @@ func (k Keeper) rewardBTCStaking(ctx context.Context, height uint64) {
+ 	k.RemoveVotingPowerDistCache(ctx, height)
+ }
+ 
++// refreshFPCommissions updates the commission of each active finality provider
++// in the distribution cache with the current value from the btcstaking store.
++func (k Keeper) refreshFPCommissions(ctx context.Context, dc *types.VotingPowerDistCache) {
++	for i := uint32(0); i < dc.NumActiveFps; i++ {
++		fp := dc.FinalityProviders[i]
++		currentFP, err := k.BTCStakingKeeper.GetFinalityProvider(ctx, fp.BtcPk.MustMarshal())
++		if err != nil {
++			k.Logger(sdk.UnwrapSDKContext(ctx)).Error(
++				"failed to refresh commission rate for finality provider",
++				"fp_btc_pk", fmt.Sprintf("%x", fp.BtcPk.MustMarshal()),
++				"error", err.Error(),
++			)
++			continue
++		}
++		fp.Commission = currentFP.Commission
++	}
++}
++
+ // SetNextHeightToReward sets the next height to reward as the given height
+ func (k Keeper) SetNextHeightToReward(ctx context.Context, height uint64) {
+ 	store := k.storeService.OpenKVStore(ctx)
+6420:+func TestRewardBTCStakingRefreshesCommission(t *testing.T) {
+6421-+	ctrl := gomock.NewController(t)
+6422-+	defer ctrl.Finish()
+6423-+
+6424-+	r := rand.New(rand.NewSource(time.Now().Unix()))
+6425-+
+6426-+	bsKeeper := types.NewMockBTCStakingKeeper(ctrl)
+6427-+	iKeeper := types.NewMockIncentiveKeeper(ctrl)
+6428-+	cKeeper := types.NewMockCheckpointingKeeper(ctrl)
+6429-+	fKeeper, ctx := keepertest.FinalityKeeper(t, bsKeeper, iKeeper, cKeeper, nil)
+6430-+
+6431-+	fpPK, err := datagen.GenRandomBIP340PubKey(r)
+6432-+	require.NoError(t, err)
+6433-+	fKeeper.SetVotingPower(ctx, fpPK.MustMarshal(), 1, 1)
+6434-+	fKeeper.SetNextHeightToReward(ctx, 1)
+6435-+
+6436-+	staleCommission := sdkmath.LegacyNewDecWithPrec(5, 2)
+6437-+	updatedCommission := sdkmath.LegacyNewDecWithPrec(10, 2)
+6438-+
+6439-+	fpAddr := datagen.GenRandomAccount().GetAddress()
+6440-+	dc := types.NewVotingPowerDistCache()
+6441-+	dc.AddFinalityProviderDistInfo(&types.FinalityProviderDistInfo{
+6442-+		BtcPk:          fpPK,
+6443-+		Addr:           fpAddr,
+6444-+		Commission:     &staleCommission,
+6445-+		TotalBondedSat: 1,
+6446-+		IsTimestamped:  true,
+6447-+	})
+6448-+	dc.NumActiveFps = 1
+6449-+	fKeeper.SetVotingPowerDistCache(ctx, 1, dc)
+6450-+
+6451-+	fKeeper.SetBlock(ctx, &types.IndexedBlock{
+6452-+		Height:    1,
+6453-+		AppHash:   datagen.GenRandomByteArray(r, 32),
+6454-+		Finalized: true,
+6455-+	})
+6456-+
+6457-+	bsKeeper.EXPECT().
+6458-+		GetFinalityProvider(gomock.Any(), fpPK.MustMarshal()).
+6459-+		Return(&bstypes.FinalityProvider{Commission: &updatedCommission}, nil).
+6460-+		Times(1)
+6461-+
+6462-+	var capturedDc *types.VotingPowerDistCache
+6463-+	iKeeper.EXPECT().
+6464-+		RewardBTCStaking(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+6465-+		Do(func(_ context.Context, _ uint64, dc *types.VotingPowerDistCache, _ map[string]struct{}) {
+6466-+			capturedDc = dc
+6467-+		}).
+6468-+		Times(1)
+6469-+
+6470-+	fKeeper.HandleRewarding(ctx, 1, uint64(10000))
+6471-+
+6472-+	require.NotNil(t, capturedDc)
+6473-+	require.Len(t, capturedDc.FinalityProviders, 1)
+6474-+	require.Equal(t, capturedDc.FinalityProviders[0].Commission.String(), updatedCommission.String(), "commission should be refreshed")
+6475-+}
+
+### 5. limites de comision (Rate/MaxRate/MaxChangeRate <= 1)
+func (cr CommissionRates) Validate() error {
+	switch {
+	case cr == (CommissionRates{}):
+		// empty commission rates
+		return ErrEmptyCommissionRates
+	case cr.MaxRate.IsNegative():
+		// max rate cannot be negative
+		return stktypes.ErrCommissionNegative
+
+	case cr.MaxRate.GT(math.LegacyOneDec()):
+		// max rate cannot be greater than 1
+		return stktypes.ErrCommissionHuge
+
+	case cr.Rate.IsNegative():
+		// rate cannot be negative
+		return stktypes.ErrCommissionNegative
+
+	case cr.Rate.GT(cr.MaxRate):
+		// rate cannot be greater than the max rate
+		return ErrCommissionGTMaxRate
+
+	case cr.MaxChangeRate.IsNegative():
+		// change rate cannot be negative
+		return stktypes.ErrCommissionChangeRateNegative
+
+	case cr.MaxChangeRate.GT(cr.MaxRate):
+		// change rate cannot be greater than the max rate
+		return stktypes.ErrCommissionChangeRateGTMaxRate
+	}
+
+	return nil
+}
+func (k Keeper) UpdateFinalityProviderCommission(goCtx context.Context, newCommission *math.LegacyDec, fp *types.FinalityProvider) error {
+	if newCommission == nil {
+		return nil
+	}
+
+	if fp.CommissionInfo == nil {
+		return fmt.Errorf("cannot update commission. Finality provider with address %s does not have commission info defined", fp.Addr)
+	}
+
+	if newCommission.IsNegative() {
+		return stktypes.ErrCommissionNegative
+	}
+
+	var (
+		ctx       = sdk.UnwrapSDKContext(goCtx)
+		blockTime = ctx.BlockHeader().Time
+	)
+	// check that there were no commission updates in the last 24hs
+	if blockTime.Sub(fp.CommissionInfo.UpdateTime).Hours() < 24 {
+		return stktypes.ErrCommissionUpdateTime
+	}
+
+	// ensure commission rate is at least the minimum commission rate in parameters
+	minCommission := k.MinCommissionRate(goCtx)
+	if newCommission.LT(minCommission) {
+		return types.ErrCommissionLTMinRate.Wrapf(
+			"cannot set finality provider commission to less than minimum rate of %s",
+			minCommission)
+	}
+
+	if newCommission.GT(fp.CommissionInfo.MaxRate) {
+		return stktypes.ErrCommissionGTMaxRate.Wrapf(
+			"cannot set finality provider commission to more than max rate of %s",
+			fp.CommissionInfo.MaxRate.String())
+	}
+
+	// check that the change rate does not exceed the max change rate allowed
+	// new rate % points change cannot be greater than the max change rate
+	if newCommission.Sub(*fp.Commission).Abs().GT(fp.CommissionInfo.MaxChangeRate) {
+		return stktypes.ErrCommissionGTMaxChangeRate
+	}
+
+	// update commission and commission update time
+	fp.Commission = newCommission
+	fp.CommissionInfo.UpdateTime = blockTime
+
+	return nil
+}
